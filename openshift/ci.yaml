@@ -1,0 +1,265 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: apache
+  template: apache-jenkins-pipeline
+message: |-
+  For more information about using this template, see https://github.com/Worteks/wsweet-ci
+metadata:
+  annotations:
+    description: Apache Base Image - Jenkinsfile
+      see https://github.com/Worteks/docker-apache
+    iconClass: icon-openshift
+    openshift.io/display-name: Apache Base CI
+    openshift.io/documentation-url: https://github.com/Worteks/wsweet-ci
+    openshift.io/provider-display-name: Worteks
+    openshift.io/support-url: https://www.worteks.com
+    tags: apache
+  name: apache-jenkins-pipeline
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Builds Wsweet Apache images
+    name: apache-jenkins-pipeline
+  spec:
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          def templateMark = 'apache-jenkins-ci'
+          def templateSel  = 'jenkins-ci-mark'
+          pipeline {
+              agent {
+                  node {
+                      label 'maven'
+                  }
+              }
+              options {
+                  timeout(time: 70, unit: 'MINUTES')
+              }
+              parameters {
+                  string(defaultValue: 'master', description: 'Apache Docker Image - Source Git Branch', name: 'apacheBranch')
+                  string(defaultValue: 'master', description: 'Apache Docker Image - Source Git Hash', name: 'apacheHash')
+                  string(defaultValue: '${GIT_SOURCE_HOST}/Wsweet/docker-apache.git', description: 'Apache Docker Image - Source Git Repository', name: 'apacheRepo')
+                  string(defaultValue: '', description: 'Jenkins Job to Notify', name: 'notifyNext')
+              }
+              stages {
+                  stage('preamble') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "Using project: ${openshift.project()}"
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('pre-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "cleaning up previous assets for apache-wsweet-${params.apacheHash}"
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('create') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      def namespace = "${openshift.project()}"
+                                      try {
+                                          timeout(10) {
+                                              def cloneProto = "http"
+                                              def created
+                                              def objectsFromTemplate
+                                              def privateRepo = false
+                                              def repoHost = params.apacheRepo.split('/')[0]
+                                              def templatePath = "/tmp/workspace/${namespace}/${namespace}-apache-jenkins-pipeline/tmpapache${params.apacheBranch}/openshift"
+                                              sh "git config --global http.sslVerify false"
+                                              sh "rm -fr tmpapache${params.apacheBranch}; mkdir -p tmpapache${params.apacheBranch}"
+                                              dir ("tmpapache${params.apacheBranch}") {
+                                                  try {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          sh "echo 'https://${GIT_TOKEN}@${params.apacheRepo}' >cloneFrom"
+                                                          cloneProto = "https"
+                                                          privateRepo = true
+                                                      }
+                                                      echo "cloning ${params.apacheRepo} over https, using ${repoHost} token"
+                                                  } catch(e) {
+                                                      echo "caught ${e} - assuming no credentials required"
+                                                      sh "echo 'http://${params.apacheRepo}' >cloneFrom 2>/dev/null"
+                                                      echo "cloning ${params.apacheRepo} over http"
+                                                  }
+                                                  def cloneAddress = readFile('cloneFrom').trim()
+                                                  sh "rm -f cloneFrom"
+                                                  try {
+                                                      // use ${params.apacheHash} instead of branch?
+                                                      // not critical, as only defines which ci.yaml template would be loaded
+                                                      // not certain the branch param accepts exact hashes anyway
+                                                      git([ branch: "${params.apacheBranch}", changelog: false, poll: false, url: cloneAddress ])
+                                                  } catch(e) {
+                                                      echo "caught ${e} - failed cloning ${params.apacheRepo}#${params.apacheBranch}"
+                                                      sh "cd .. ; rm -fr tmpapache${params.apacheBranch}"
+                                                      throw e
+                                                  }
+                                              }
+                                              try {
+                                                  sh "test -d ${templatePath}"
+                                              } catch (e) {
+                                                  echo "Could not find ./openshift in ${params.apacheRepo}#${params.apacheBranch}"
+                                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-apache-jenkins-pipeline/tmpapache${params.apacheBranch}"
+                                                  throw e
+                                              }
+                                              echo "Processing Apache:${params.apacheHash}, from ${repoHost}, tagging to ${params.apacheBranch}"
+                                              try {
+                                                  echo " == Creating ImageStream =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml",
+                                                      '-p', "FRONTNAME=wsweet")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach {
+                                                      echo "Created ${it.name()} with labels ${it.object().metadata.labels}"
+                                                  }
+                                              } catch(e) {
+                                                  echo "Failed creating ImageStream"
+                                                  echo "${e}"
+                                              }
+                                              echo " == Creating BuildConfigs =="
+                                              if (privateRepo) {
+                                                  withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml",
+                                                          '-p', "APACHE_REPOSITORY_REF=${params.apacheHash}",
+                                                          '-p', "APACHE_REPOSITORY_URL=${cloneProto}://${params.apacheRepo}",
+                                                          '-p', "FRONTNAME=wsweet",
+                                                          '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}")
+                                                  }
+                                              } else {
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml",
+                                                      '-p', "APACHE_REPOSITORY_REF=${params.apacheHash}",
+                                                      '-p', "APACHE_REPOSITORY_URL=${cloneProto}://${params.apacheRepo}",
+                                                      '-p', "FRONTNAME=wsweet")
+                                              }
+                                              echo "The template will create ${objectsFromTemplate.size()} objects"
+                                              for (o in objectsFromTemplate) {
+                                                  o.metadata.labels["${templateSel}"] = "${templateMark}-${params.apacheHash}"
+                                              }
+                                              created = openshift.apply(objectsFromTemplate)
+                                              created.withEach {
+                                                  echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}"
+                                              }
+                                          }
+                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-apache-jenkins-pipeline/tmpapache${params.apacheBranch}"
+                                      } catch(e) {
+                                          echo "in catch block while creating resources, cleaning up apache-wsweet-${params.apacheHash}"
+                                          sh "rm -fr /tmp/workspace/${namespace}/${namespace}-apache-jenkins-pipeline/tmpapache${params.apacheBranch}"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('build') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(45) {
+                                              echo "watching apache-wsweet-${params.apacheHash} docker image build"
+                                              def builds = openshift.selector("bc", [ name: "apache-wsweet-${params.apacheHash}" ]).related('builds')
+                                              builds.untilEach(1) {
+                                                  return (it.object().status.phase == "Complete")
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "in catch block while building docker image, cleaning up apache-wsweet-${params.apacheHash} assets"
+                                          openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                          openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                          echo "Caught: ${e}"
+                                          currentBuild.result = 'FAILURE'
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('tag') {
+                      steps {
+                          script {
+                              if ("${params.apacheBranch}" == "${params.apacheHash}") {
+                                  echo "skipping tag - source matches target"
+                              } else {
+                                  openshift.withCluster() {
+                                      openshift.withProject() {
+                                          try {
+                                              timeout(5) {
+                                                  def namespace = "${openshift.project()}"
+                                                  retry(3) {
+                                                      sh """
+                                                      oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                      oc describe -n ${namespace} imagestreamtag apache-wsweet:${params.apacheHash} || exit 1
+                                                      oc tag -n ${namespace} apache-wsweet:${params.apacheHash} apache-wsweet:${params.apacheBranch}
+                                                      """
+                                                  }
+                                              }
+                                          } catch(e) {
+                                              echo "in catch block while tagging Apache image, cleaning up apache-wsweet-${params.apacheHash} assets"
+                                              openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                              openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                              echo "Assuming build failed. Sleeping for 3 minutes and re-scheduling job"
+                                              sleep 180
+                                              def jobName   = "${namespace}/${namespace}-apache-jenkins-pipeline"
+                                              def jobParams = [
+                                                      [$class: 'StringParameterValue', name: "apacheBranch", value: params.apacheBranch],
+                                                      [$class: 'StringParameterValue', name: "apacheHash", value: params.apacheHash],
+                                                      [$class: 'StringParameterValue', name: "apacheRepo", value: params.apacheRepo]
+                                                  ]
+                                              try {
+                                                  build job: jobName, parameters: jobParams, propagate: false, wait: false
+                                              } catch(e1) {
+                                                  echo "caught ${e1}"
+                                              }
+                                              echo "Caught: ${e}"
+                                              currentBuild.result = 'FAILURE'
+                                              throw e
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('post-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.apacheHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+      type: JenkinsPipeline
+parameters:
+- name: GIT_SOURCE_HOST
+  description: Git FQDN we would build images from
+  displayName: Git
+  value: github.com
