@@ -1,7 +1,7 @@
 #!/bin/sh
 
 if test "$APACHE_IGNORE_OPENLDAP"; then
-    echo Skipping OenLDAP Configuration - Ignored by Runtime
+    echo Skipping OpenLDAP Configuration - Ignored by Runtime
 elif test "$OPENLDAP_HOST" -a "$OPENLDAP_DOMAIN"; then
     APACHE_HTTP_PORT=${APACHE_HTTP_PORT:-8080}
     OPENLDAP_BIND_DN_PREFIX=${OPENLDAP_BIND_DN_PREFIX:-'cn=apache,ou=services'}
