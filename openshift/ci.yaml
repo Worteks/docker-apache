@@ -36,8 +36,8 @@ objects:
               }
               options { timeout(time: 70, unit: 'MINUTES') }
               parameters {
-                  string(defaultValue: 'master', description: 'Apache Docker Image - Source Git Branch', name: 'apacheBranch')
-                  string(defaultValue: 'master', description: 'Apache Docker Image - Source Git Hash', name: 'apacheHash')
+                  string(defaultValue: 'buster', description: 'Apache Docker Image - Source Git Branch', name: 'apacheBranch')
+                  string(defaultValue: 'buster', description: 'Apache Docker Image - Source Git Hash', name: 'apacheHash')
                   string(defaultValue: '${GIT_SOURCE_HOST}/Wsweet/docker-apache.git', description: 'Apache Docker Image - Source Git Repository', name: 'apacheRepo')
                   string(defaultValue: '3', description: 'Max Retry', name: 'jobMaxRetry')
                   string(defaultValue: '1', description: 'Retry Count', name: 'jobRetryCount')

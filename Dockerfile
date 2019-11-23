@@ -1,4 +1,4 @@
-FROM debian:stretch-slim
+FROM debian:buster-slim
 
 # Apache Base image for OpenShift Origin
 
@@ -11,8 +11,7 @@ LABEL io.k8s.description="Apache 2.4 Base Image." \
       maintainer="Thibaut DEMARET <thidem@worteks.com>, Samuel MARTIN MORO <sammar@worteks.com>" \
       version="2.4"
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    HANDLERVERSION=1.9.7-3+deb9u2
+ENV DEBIAN_FRONTEND=noninteractive
 
 COPY config/* /
 
@@ -31,23 +30,18 @@ RUN echo "# Install Dumb-init" \
     && echo "# Install Apache" \
     && apt-get install --no-install-recommends -y ca-certificates apache2 \
 	libnss-wrapper ldap-utils libmodule-build-perl libapache2-mod-perl2 \
-	libcgi-pm-perl libapache-session-ldap-perl libdbd-pg-perl cpanminus \
-	lemonldap-ng-handler=${HANDLERVERSION} build-essential \
+	libcgi-pm-perl libapache-session-ldap-perl lemonldap-ng-handler \
     && apt-get -y remove --purge libapache-session-browseable-perl \
     && ( \
 	echo y; \
 	echo o conf prerequisites_policy follow; \
 	echo o conf commit \
-    ) | cpanm install \
-	Apache::Session::Postgres \
+    ) | cpan install \
 	Apache::Session::Browseable \
-	Apache::Session::Browseable::Postgres \
 	Apache::Session::Browseable::LDAP \
 	Apache::Session::Browseable::Store::LDAP \
-	Apache::Session::Browseable::PgJSON \
     && mkdir -p /usr/share/lemon/etc-lemonldap-ng \
     && mv /lemonldap-ng.ini /usr/share/lemon/etc-lemonldap-ng/ \
-    && apt-get -y remove --purge build-essential \
     && apt-get clean \
     && . /etc/apache2/envvars \
     && ln -sfT /dev/stderr "$APACHE_LOG_DIR/error.log" \
@@ -60,8 +54,7 @@ RUN echo "# Install Dumb-init" \
 	echo ErrorLog /dev/stderr >>/etc/apache2/apache2.conf; \
     fi \
     && if grep TransferLog /etc/apache2/apache2.conf >/dev/null; then \
-	sed -i 's|TransferLog.*|TransferLog /dev/stdout|' \
-	    /etc/apache2/apache2.conf; \
+	sed -i 's|TransferLog.*|TransferLog /dev/stdout|' /etc/apache2/apache2.conf; \
     else \
 	echo TransferLog /dev/stdout >>/etc/apache2/apache2.conf; \
     fi \
@@ -74,9 +67,8 @@ RUN echo "# Install Dumb-init" \
     && mv /custom-log-fmt.conf /remoteip.conf /etc/apache2/conf-available/ \
     && a2enmod alias remoteip rewrite ssl headers perl status \
     && a2enconf remoteip custom-log-fmt \
-    && a2dismod mpm_event \
-    && a2enmod mpm_prefork \
     && mv /lemon-sso.sh /nsswrapper.sh /setupvhosts.sh /usr/local/bin/ \
+    && ln -sf /usr/local/bin/nsswrapper.sh /usr/local/bin/nswrapper.sh \
     && cp -p /etc/lemonldap-ng/lemonldap-ng.ini \
 	/root/original-lemonldap-ng.ini \
     && for dir in "$APACHE_LOCK_DIR" "$APACHE_RUN_DIR" \
